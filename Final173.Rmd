@@ -1,0 +1,800 @@
+---
+title: "Final173"
+author: "Nick"
+date: "2024-12-03"
+output: html_document
+---
+
+```{r setup, include=TRUE}
+### Load the Current Population Survey Outgoing Rotation Group data (from where you have saved it)
+rm(list = ls())
+library(knitr)
+library(AER)
+library(sandwich)
+library(tidyverse)  
+library(plm)
+library(haven)
+library(readxl)
+library(modelsummary) 
+library(lfe)
+library(ivreg)
+library(rvest)
+library(dplyr)
+library(TTR)
+library(writexl)
+library(readxl)
+
+MyDir = getwd()
+
+### Leave the rest of this chunk alone, unless you need to add a package
+
+# Sundstrom directory (leave this alone!)
+SundstromDir <- "/Users/wsundstrom/Library/CloudStorage/GoogleDrive-wsundstrom@scu.edu/My Drive/Econ173/data"
+
+# Choose correct working directory and proceed
+if (file.exists(SundstromDir)){
+  WorkDir = SundstromDir
+} else {
+  WorkDir = MyDir
+}
+
+# Set working directory 
+setwd(WorkDir)
+load("org_2000_2024.RData")
+
+# merge the state names using the "statefip" variable
+url <- "https://github.com/wsundstrom/econ173/raw/data/statefips.dta"
+states <- read_dta(url) %>% 
+  select(statefip = statefips, state = statename, statecd)
+org <- org %>% 
+  left_join(states)
+
+
+
+
+# Scrape the HTML tables on the following website using rvest package:
+url <- "https://www.dol.gov/agencies/whd/state/minimum-wage/history"
+# read in calculated values for percentage change
+data <- read_excel("percentage_change_results.xlsx")
+
+
+# Get the tables - this results in a list because there are multiple tables
+minwage <- url %>%
+  read_html() %>%
+  html_nodes("table") 
+# the tables with the years we want (2000-) are the 3rd-6th 
+minwage3 <- minwage %>%     
+  .[[3]] %>%                  # 3rd table
+  html_table() 
+colnames(minwage3)[1] <- "state"
+minwage4 <- minwage %>%     
+  .[[4]] %>%                  
+  html_table() 
+colnames(minwage4)[1] <- "state"
+minwage5 <- minwage %>%     
+  .[[5]] %>%                  
+  html_table() 
+colnames(minwage5)[1] <- "state"
+minwage6 <- minwage %>%     
+  .[[6]] %>%                  
+  html_table() 
+colnames(minwage6)[1] <- "state"
+
+# minwageL and minwageU are the upper and lower values for states with a range
+mintab <- minwage3 %>% 
+  left_join(minwage4) %>% 
+  left_join(minwage5) %>% 
+  left_join(minwage6) %>% 
+  pivot_longer(-state, names_to = "year", values_to = "minwage") %>% 
+  separate(minwage, into = c("minwageL", "minwageU"), sep = "-", remove = F) %>% 
+  mutate(year = as.numeric(gsub("[^0-9]+", "", year)),
+         minwageL = as.numeric(gsub("[^0-9.]+", "", minwageL, perl = TRUE)),
+         minwageU = ifelse(is.na(minwageU), minwageL, as.numeric(gsub("[^0-9.]+", "", minwageU, perl = TRUE))),
+         minwageL = ifelse(state=="Nevada" & year==2022, 9.50, minwageL),
+         minwageU = ifelse(state=="Nevada" & year==2022, 10.50, minwageU),
+         minwageL = ifelse(state=="Nevada" & year==2023, 10.25, minwageL),
+         minwageU = ifelse(state=="Nevada" & year==2023, 11.25, minwageU)) %>%
+  filter(!(state %in% c("Guam", "Puerto Rico", "U.S. Virgin Islands")))
+
+# assign federal min if min is missing or fed > state min 
+fedmin <- mintab %>% 
+  filter(state=="Federal (FLSA)") %>% 
+  mutate(fedmin = minwageL) %>% 
+  select(year, fedmin)
+mintab <- mintab %>% 
+  left_join(fedmin) %>% 
+  mutate(minwageL = ifelse(is.na(minwageL) | fedmin>minwageL, fedmin, minwageL),
+         minwageU = ifelse(is.na(minwageU) | fedmin>minwageU, fedmin, minwageU)) %>% 
+  filter(state!="Federal (FLSA)") %>% 
+  select(-minwage) 
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r yeet, echo=TRUE}
+org$hourwage <- ifelse(org$hourwage == 999.99, NA, org$hourwage)
+org$hourwage2 <- ifelse(org$hourwage2 == 999.99, NA, org$hourwage2)
+org$hourwage <- ifelse(org$hourwage == 999.99, NA, org$hourwage)
+org$earnweek <- ifelse(org$earnweek == 9999.99, NA, org$earnweek)
+org$earnweek2 <- ifelse(org$earnweek2 == 9999.99, NA, org$earnweek2)
+
+org <- org %>%
+  mutate(educ_level = case_when(
+    educ == 2 ~ "None, preschool, or kingergarten",
+    educ == 10 ~ "Grades 1, 2, 3, or 4",
+    educ == 20 ~ "Grades 5 or 6",
+    educ == 30 ~ "Grades 7 or 8",
+    educ == 40 ~ "Grade 9",
+    educ == 50 ~ "Grade 10",
+    educ == 60 ~ "Grade 11",
+    educ == 71 ~ "12th grade, no diploma",
+    educ == 73 ~ "High school diploma or equivalent",
+    educ == 81 ~ "Some college but no degree",
+    educ == 91 ~ "Associate's degree, occupational/vocational",
+    educ == 92 ~ "Associate's degree, academic program",
+    educ == 111 ~ "Bachelor's degree",
+    educ == 123 ~ "Master's degree",
+    educ == 124 ~ "Professional school degree",
+    educ == 125 ~ "Doctorate degree",
+    TRUE ~ as.character(educ)  # keeps any existing values not matched
+  ))  
+
+org_minwage <- left_join(org, mintab, by = c("year", "state"))
+
+org_minwage <- org_minwage %>%
+  group_by(year, occ2010, statecd) %>%  # Group by year, occ2010, and statecd
+  mutate(mean_hourwage = mean(hourwage, na.rm = TRUE)) %>%  # Calculate mean of hourwage
+  ungroup()  # Ungroup to prevent grouped structure in the final dataframe
+
+org_minwage$occ2010 <- ifelse(org_minwage$occ2010 == 9999, NA, org_minwage$occ2010)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r gyatt, echo=TRUE}
+#### 2006-2009 recession
+
+
+recession_period <- data %>%
+  filter(year >= 2004 & year <= 2010) %>%
+  filter(count > 500)
+
+rec_period_loss <- recession_period %>%
+  filter(year >= 2007 & year <= 2010) %>%
+  filter(percentage_change <= -11.48)
+
+rec_loss <- data %>%
+  filter(occ2010 %in% c(4010, 3800, 4920, 8220, 5810, 6230, 6420, 8740, 7340, 9100)) %>%
+  filter(year >= 2007 & year <= 2010)
+
+rec_per_loss_y_over_y <- recession_period %>%
+  filter(occ2010 %in% c(4010, 3800, 4920, 8220, 5810, 6230, 6420, 8740, 7340, 9100)) %>%
+  filter(year >= 2007 & year <= 2010)
+
+
+
+# Group by 'year' and calculate the mean of 'per_change' (or another aggregation)
+avg_rec_per_loss <- recession_period %>%
+  group_by(year, occ2010, count) %>%
+  summarize(mean_per_change = mean(percentage_change, na.rm = TRUE))
+
+
+####recession_period <- recession1_grouped %>%
+  ####filter(year >= 2007 & year <= 2010) %>%
+  ####filter(mean_per_change <= -9.9)
+
+
+
+ggplot(rec_loss, aes(x = year, y = percentage_change, color = factor(occ2010), group = occ2010)) +
+  geom_line(size = 0.5) +  # Add lines for each occ2010 group
+  
+  labs(
+    title = "Percentage Change by occ2010 Over Years",
+    x = "Years",
+    y = "Percentage Change",
+    color = "occ2010"
+  ) +
+  theme_minimal() + # Use a clean theme
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14)
+  )
+
+
+ggplot(rec_loss, aes(x = year, y = percentage_change, fill = factor(occ2010))) +
+  geom_bar(stat = "identity", position = "dodge") +  # Bar chart with dodge positioning
+  labs(
+    title = "Percentage Change by occ2010 Over Years",
+    x = "Years",
+    y = "Percentage Change",
+    fill = "occ2010"
+  ) +
+  theme_minimal() +  # Use a clean theme
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14)
+  )
+```
+
+
+```{r livvydunne, echo=TRUE}
+avg_perc_2006 <- rec_loss %>%
+  group_by(occ2010) %>%             
+  summarize(avg_percentage_change = mean(percentage_change))
+
+ggplot(avg_perc_2006, aes(x = factor(occ2010), y = avg_percentage_change, fill = factor(occ2010))) +
+  geom_bar(stat = "identity", position = "dodge") +  # Bar chart with dodge positioning
+  
+  labs(
+    title = "Average Percentage Change by occ2010 Over 2007-2010 Recession",
+    x = "occ2010",
+    y = "Average Percentage Change",
+    fill = "occ2010"
+  ) +
+  theme_minimal() +  # Use a clean theme
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14)
+  )
+
+real_estate <- rec_loss %>%
+  filter(occ2010 %in% c(4920)) %>%
+  filter(year >= 2005 & year <= 2010)
+
+ggplot(real_estate, aes(x = year, y = percentage_change, color = factor(occ2010), group = occ2010)) +
+  geom_line(size = 0.5) +  # Add lines for each occ2010 group
+  
+  labs(
+    title = "Percentage Change by occ2010 Over Years",
+    x = "Years",
+    y = "Percentage Change",
+    color = "occ2010"
+  ) +
+  theme_minimal() + # Use a clean theme
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14)
+  )
+```
+
+
+```{r skibidi, echo=TRUE}
+#### COVID-19 recession
+
+
+
+covid_period <- data %>%
+  filter(year >= 2019 & year <= 2022) %>%
+  filter(count > 500)
+
+covid_per_loss <- covid_period %>%
+  filter(year >= 2019 & year <= 2022) %>%
+  filter(percentage_change <= -13.83)
+
+covid_loss <- data %>%
+  filter(occ2010 %in% c(4030, 2200, 3500, 5940, 7200, 4720, 3650, 4110, 4010, 4600)) %>%
+  filter(year >= 2019 & year <= 2022)
+  #filter(occ2010 %in% c(800, 2200, 3500, 3650, 3930, 4010, 4030, 4110, 4230, 4600, 4720, 5940, 6420, 6050, 5200, 7200, 7700, 8965, 9600, 4250)) %>%
+  
+covid_per_loss_y_over_y <- covid_period %>%
+  filter(occ2010 %in% c(4030, 2200, 3500, 5940, 7200, 4720, 3650, 4110, 4010, 4600)) %>%
+  filter(year >= 2019 & year <= 2022)
+
+ggplot(covid_loss, aes(x = year, y = percentage_change, color = factor(occ2010), group = occ2010)) +
+  geom_line(size = 0.5) +  # Add lines for each occ2010 group
+  labs(
+    title = "Percentage Change by occ2010 Over Years",
+    x = "Years",
+    y = "Percentage Change",
+    color = "occ2010"
+  ) +
+  theme_minimal() + # Use a clean theme
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14)
+  )
+
+ggplot(covid_loss, aes(x = factor(year), y = percentage_change, fill = factor(occ2010))) +
+  geom_bar(stat = "identity", position = "dodge") +  # Bar chart with dodge positioning
+  labs(
+    title = "Percentage Change by occ2010 Over Years",
+    x = "Years",
+    y = "Percentage Change",
+    fill = "occ2010"
+  ) +
+  theme_minimal() +  # Use a clean theme
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14)
+  )
+
+avg_perc_covid <- covid_loss %>%
+  group_by(occ2010) %>%               # Group by occ2010 and year
+  summarize(avg_percentage_change = mean(percentage_change))# Compute the mean, handling NAs
+
+ggplot(avg_perc_covid, aes(x = factor(occ2010), y = avg_percentage_change, fill = factor(occ2010))) +
+  geom_bar(stat = "identity", position = "dodge") +  # Bar chart with dodge positioning
+  labs(
+    title = "Average Percentage Change by occ2010 Over COVID-19 Period (2019-2022)",
+    x = "occ2010",
+    y = "Average Percentage Change",
+    fill = "occ2010"
+  ) +
+  theme_minimal() +  # Use a clean theme
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14)
+  )
+
+```
+
+```{r rizzler, echo=TRUE}
+#### Taking occupation counts to create percentages of labor force for each year during 2007-2010
+
+recession_counts <- org %>%
+  filter(year >= 2007 & year <= 2010) %>%  # Filter for years 2007-2010
+  group_by(occ2010, year) %>%  # Group by occ2010 and year
+  summarise(count = n(), .groups = "drop") %>%  # Count observations
+  pivot_wider(names_from = year, values_from = count, values_fill = 0)  # Pivot to wide format
+
+recession_counts <- org %>%
+  filter(year >= 2007 & year <= 2010) %>%  # Filter for years 2007-2010
+  group_by(occ2010, year) %>%  # Group by occ2010 and year
+  summarise(count = n(), .groups = "drop") %>%  # Count observations
+  pivot_wider(names_from = year, values_from = count, values_fill = 0)  # Pivot to wide format
+  recession_counts$occ2010 <- ifelse(recession_counts$occ2010 == 9999, NA, recession_counts$occ2010) # Filter out people with no occupation values
+  
+# Filter out the N/A from occ2010 == 9999
+  recession_counts <- recession_counts %>%
+    filter(!is.na(occ2010))
+
+
+total_recession <- recession_counts %>%
+  summarise(across(starts_with("20"), sum, na.rm = TRUE))
+
+recession_counts <- recession_counts %>%
+  mutate(
+    percent_2007 = (`2007` / total_recession$`2007`) * 100,
+    percent_2008 = (`2008` / total_recession$`2008`) * 100,
+    percent_2009 = (`2009` / total_recession$`2009`) * 100,
+    percent_2010 = (`2010` / total_recession$`2010`) * 100
+  )
+
+recession_percent_filt <- recession_counts %>%
+  filter(occ2010 %in% c(4010, 3800, 4920, 8220, 5810, 6230, 6420, 8740, 7340, 9100)) # Filter for variables of interest
+
+# Take the state level during recession
+
+
+state_rec_counts <- org_minwage %>%
+  filter(year >= 2007 & year <= 2010) %>%  # Filter for years 2007-2010
+  group_by(occ2010, year, state) %>%  # Group by occ2010 and year
+  summarise(count = n(), .groups = "drop") %>%  # Count observations
+  pivot_wider(names_from = year, values_from = count, values_fill = 0)  # Pivot to wide format
+  
+
+# Filter out the N/A from occ2010 == 9999
+state_rec_counts <- state_rec_counts %>%
+  filter(!is.na(occ2010))
+
+
+state_total_rec <- state_rec_counts %>%
+  group_by(state) %>%  # Group by state
+  summarise(across(starts_with("20"), sum, na.rm = TRUE), .groups = "drop")
+
+state_rec <- state_total_rec %>%
+  group_by(state) %>%
+  summarise(across(starts_with("20"), sum, na.rm = TRUE))
+
+state_rec_perc <- state_rec_counts %>%
+  mutate(
+    percent_2007 = (`2007` / state_rec$`2007`) * 100,
+    percent_2008 = (`2008` / state_rec$`2008`) * 100,
+    percent_2009 = (`2009` / state_rec$`2009`) * 100,
+    percent_2010 = (`2010` / state_rec$`2010`) * 100
+  )
+
+state_rec_per_filt <- state_rec_perc %>%
+  filter(occ2010 %in% c(4010, 3800, 4920, 8220, 5810, 6230, 6420, 8740, 7340, 9100)) 
+
+long_rec <- state_rec_per_filt %>%
+  pivot_longer(
+    cols = c("2007", "2008", "2009", "2010", "percent_2007", "percent_2008", "percent_2009", "percent_2010"), 
+    names_to = "key", 
+    values_to = "value"
+  ) %>%
+  mutate(
+    year = case_when(
+      key %in% c("2007", "2008", "2009", "2010") ~ key,
+      key %in% c("percent_2007", "percent_2008", "percent_2009", "percent_2010") ~ sub("percent_", "", key)
+    ),
+    variable = case_when(
+      key %in% c("2007", "2008", "2009", "2010") ~ "counts",
+      key %in% c("percent_2007", "percent_2008", "percent_2009", "percent_2010") ~ "percent_employment"
+    )
+  ) %>%
+  select(-key) %>%
+  pivot_wider(names_from = variable, values_from = value)
+
+
+long_rec <- long_rec %>%
+  mutate(year = as.numeric(year))
+
+mintab <- mintab %>%
+  mutate(year = as.numeric(year))
+
+mintab_subset <- mintab %>% select(state, year, minwageU)
+
+# Perform a left join to merge the selected column into long_rec
+long_rec <- long_rec %>%
+  left_join(mintab_subset, by = c("year", "state"))
+
+org_minwage <- org_minwage %>%
+  mutate(year = as.numeric(year))
+
+orgminwage_subset <- org_minwage %>% select(state, year, occ2010, mean_hourwage, statefip)
+
+long_rec <- long_rec %>%
+  left_join(orgminwage_subset, by = c("year", "state", "occ2010")) %>%
+  distinct()
+
+long_rec <- long_rec %>%
+  mutate(
+    within_150pct = ifelse(mean_hourwage <= 1.5 * minwageU, 1, 0)  # Create binary variable
+  )
+
+binary_rec <- long_rec %>%
+  filter(within_150pct == 1) %>%  # Filter rows where the binary variable is 1
+  group_by(occ2010, year) %>%  # Group by occ2010
+  summarise(count = n(), .groups = "drop")  # Count occurrences for each occ2010
+
+rec_per_loss_y_over_y_subset <- rec_per_loss_y_over_y %>% select(year, occ2010, percentage_change)
+
+long_rec <- long_rec %>%
+  left_join(rec_per_loss_y_over_y_subset, by = c("year", "occ2010"))
+
+long_rec <- long_rec %>%
+  filter(!is.na(statefip))
+
+
+reg1 <- felm(percentage_change ~ within_150pct | 0 | 0 | state, data = long_rec )
+
+# reg2: TWFEs state + year
+reg2 <- felm(percentage_change ~ within_150pct | state + year | 0 | state, data = long_rec )
+
+# reg2w: TWFEs state + year with population weights
+reg2w <- felm(percentage_change ~ within_150pct | state + year | 0 | state, weights = long_rec$statefip, data = long_rec )
+
+# reg3: TWFE with state-specific time trends
+reg3 <- felm(percentage_change ~ within_150pct | state + year | 0 | state, data = long_rec )
+
+AboveMedian <- list("OLS"=reg1, "TWFE"=reg2, "TWFE+trend"=reg3)
+modelsummary(AboveMedian,
+             coef_map = c("minwageU"="Minimum Wage", "mean_hourwage"="Mean Hourly Wage", "percent_employment"="Percent Employment", "within_150pct"="Within 150% of Minimum Wage"), # don't show intercept or state trends
+             stars=T, gof_map = c("nobs", "r.squared"),
+             title = "Percentage Change of Employment based on being within 150% of Minimum Wage during the 2006-2009 Recession",
+             output="default")
+
+
+state_mapping <- data.frame(
+  statefip = c(1, 2, 4, 5, 6, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 
+               20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 
+               36, 37, 38, 39, 40, 41, 42, 44, 45, 46, 47, 48, 49, 50, 51, 
+               53, 54, 55, 56),
+  state_name = c(
+    "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", 
+    "Connecticut", "Delaware", "District of Columbia", "Florida", "Georgia", 
+    "Hawaii", "Idaho", "Illinois", "Indiana", "Iowa", "Kansas", "Kentucky", 
+    "Louisiana", "Maine", "Maryland", "Massachusetts", "Michigan", "Minnesota", 
+    "Mississippi", "Missouri", "Montana", "Nebraska", "Nevada", "New Hampshire", 
+    "New Jersey", "New Mexico", "New York", "North Carolina", "North Dakota", 
+    "Ohio", "Oklahoma", "Oregon", "Pennsylvania", "Rhode Island", 
+    "South Carolina", "South Dakota", "Tennessee", "Texas", "Utah", "Vermont", 
+    "Virginia", "Washington", "West Virginia", "Wisconsin", "Wyoming"
+  )
+)
+
+statefip_rec <- long_rec %>%
+  select(statefip) %>%
+  distinct() %>%
+  mutate(statefip = as.character(statefip))
+  
+
+
+long_rec <- long_rec %>%
+  left_join(state_mapping %>% mutate(statefip_rec = as.character(statefip)), by = "statefip")
+
+
+create_state_plots1 <- function(long_rec, output_dir = "state_plots_rec") {
+  # Create output directory if it doesn't exist
+  full_output_dir <- file.path(getwd(), output_dir)
+  
+  if (!dir.exists(full_output_dir)) {
+    dir.create(full_output_dir)
+  }
+  
+  # Ensure statefip is a character in long_covid (if necessary)
+  long_rec <- long_rec %>% mutate(statefip = as.character(statefip))
+  
+  # Get unique statefip codes
+  statefips <- unique(long_rec$statefip)
+  
+  # Iterate over each statefip and create a plot
+  for (statefip_code in statefips) {
+    # Filter data for the specific statefip
+    state_data <- long_rec %>% filter(statefip == statefip_code)
+    
+    # Get the state name corresponding to the statefip
+    state_name <- unique(state_data$state_name)
+    
+    # Check for any duplicate rows
+    if (nrow(state_data) > 0) {
+      
+      # Generate the ggplot for each state
+      p <- ggplot(state_data, aes(x = year, y = percent_employment, fill = as.factor(occ2010))) +
+        geom_bar(stat = "identity", position = "dodge") +
+        labs(
+          title = paste("Percent Employment in State", state_name),
+          x = "Year",
+          y = "Percent Employment",
+          fill = "Occupation"
+        ) +
+        theme_minimal() +
+        theme(
+          axis.text.x = element_text(angle = 45, hjust = 1),
+          strip.text = element_text(size = 8)
+        )
+      
+      # Save the plot to the output directory with statefip-specific file names
+      ggsave(filename = file.path(full_output_dir, paste0("state_", statefip_code, ".png")), plot = p, width = 10, height = 6)
+    } else {
+      warning(paste("No data found for statefip:", statefip_code))
+    }
+  }
+}
+
+
+create_state_plots1(long_rec, output_dir = "state_plots_rec")
+
+
+```
+
+```{r megaknight, echo=TRUE}
+#### Taking occupation counts to create percentages of labor force for each year during 2019-2022
+
+
+national_covid_counts <- org %>%
+  filter(year >= 2019 & year <= 2022) %>%  # Filter for years 2007-2010
+  group_by(occ2010, year) %>%  # Group by occ2010 and year
+  summarise(count = n(), .groups = "drop") %>%  # Count observations
+  pivot_wider(names_from = year, values_from = count, values_fill = 0)  # Pivot to wide format
+national_covid_counts$occ2010 <- ifelse(national_covid_counts$occ2010 == 9999, NA, national_covid_counts$occ2010) # Filter out people with no occupation values
+
+# Filter out the N/A from occ2010 == 9999
+national_covid_counts <- national_covid_counts %>%
+  filter(!is.na(occ2010))
+
+
+national_total_covid <- national_covid_counts %>%
+  summarise(across(starts_with("20"), sum, na.rm = TRUE))
+
+national_covid_counts <- national_covid_counts %>%
+  mutate(
+    percent_2019 = (`2019` / national_total_covid$`2019`) * 100,
+    percent_2020 = (`2020` / national_total_covid$`2020`) * 100,
+    percent_2021 = (`2021` / national_total_covid$`2021`) * 100,
+    percent_2022 = (`2022` / national_total_covid$`2022`) * 100
+  )
+
+
+national_covid_percent_filt <- national_covid_counts %>%
+  filter(occ2010 %in% c(4030, 2200, 3500, 5940, 7200, 4720, 3650, 4110, 4010, 4600)) # Filter for variables of interest
+
+
+# Take total by states, years for occupation to show state based labor participation during COVID-19
+
+state_covid_counts <- org_minwage %>%
+  filter(year >= 2019 & year <= 2022) %>%  # Filter for years 2007-2010
+  group_by(occ2010, year, state) %>%  # Group by occ2010 and year: , minwageU, mean_hourwage
+  summarise(count = n(), .groups = "drop") %>%  # Count observations
+  pivot_wider(names_from = year, values_from = count, values_fill = 0)  # Pivot to wide format
+
+state_covid_counts <- state_covid_counts %>%
+  filter(!is.na(occ2010))
+
+state_total_covid <- state_covid_counts %>%
+  group_by(state) %>%  # Group by state
+  summarise(across(starts_with("20"), sum, na.rm = TRUE), .groups = "drop")
+
+state_covid <- state_total_covid %>%
+  group_by(state) %>%
+  summarise(across(starts_with("20"), sum, na.rm = TRUE))
+
+state_covid_perc <- state_covid_counts %>%
+  mutate(
+    percent_2019 = (`2019` / state_covid$`2019`) * 100,
+    percent_2020 = (`2020` / state_covid$`2020`) * 100,
+    percent_2021 = (`2021` / state_covid$`2021`) * 100,
+    percent_2022 = (`2022` / state_covid$`2022`) * 100
+  )
+
+state_covid_per_filt <- state_covid_perc %>%
+  filter(occ2010 %in% c(4030, 2200, 3500, 5940, 7200, 4720, 3650, 4110, 4010, 4600)) #%>%  # Filter for specific occ2010
+
+
+long_covid <- state_covid_per_filt %>%
+  pivot_longer(
+    cols = c("2019", "2020", "2021", "2022", "percent_2019", "percent_2020", "percent_2021", "percent_2022"), 
+    names_to = "key", 
+    values_to = "value"
+  ) %>%
+  mutate(
+    year = case_when(
+      key %in% c("2019", "2020", "2021", "2022") ~ key,
+      key %in% c("percent_2019", "percent_2020", "percent_2021", "percent_2022") ~ sub("percent_", "", key)
+    ),
+    variable = case_when(
+      key %in% c("2019", "2020", "2021", "2022") ~ "counts",
+      key %in% c("percent_2019", "percent_2020", "percent_2021", "percent_2022") ~ "percent_employment"
+    )
+  ) %>%
+  select(-key) %>%
+  pivot_wider(names_from = variable, values_from = value)
+
+
+long_covid <- long_covid %>%
+  mutate(year = as.numeric(year))
+```
+
+```{r evopekka, echo=TRUE}
+mintab <- mintab %>%
+  mutate(year = as.numeric(year))
+
+mintab_subset <- mintab %>% select(state, year, minwageU)
+
+# Perform a left join to merge the selected column into df1
+long_covid <- long_covid %>%
+  left_join(mintab_subset, by = c("year", "state"))
+
+org_minwage <- org_minwage %>%
+  mutate(year = as.numeric(year))
+
+orgminwage_subset <- org_minwage %>% select(state, year, occ2010, mean_hourwage, statefip)
+
+long_covid <- long_covid %>%
+  left_join(orgminwage_subset, by = c("year", "state", "occ2010")) %>%
+  distinct()
+
+ 
+long_covid <- long_covid %>%
+  mutate(
+  within_150pct = ifelse(mean_hourwage <= 1.5 * minwageU, 1, 0)  # Create binary variable
+  )
+  
+binary_covid <- long_covid %>%
+  filter(within_150pct == 1) %>%  # Filter rows where the binary variable is 1
+  group_by(occ2010, year) %>%  # Group by occ2010
+  summarise(count = n(), .groups = "drop")  # Count occurrences for each occ2010
+  
+covid_per_loss_y_over_y_subset <- covid_per_loss_y_over_y %>% select(year, occ2010, percentage_change)
+  
+long_covid <- long_covid %>%
+    left_join(covid_per_loss_y_over_y_subset, by = c("year", "occ2010"))
+    
+long_covid <- long_covid %>%
+  filter(!is.na(statefip))
+    
+ggplot(long_covid, aes(x = year, y = percent_employment, fill = as.factor(occ2010))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ statefip) +
+  labs(
+    title = "Percent Employment by Year, Occupation, and State",
+    x = "Year",
+    y = "Percent Employment",
+    fill = "Occupation"
+  ) +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 8))
+
+
+statefip_covid <- long_covid %>%
+  select(statefip) %>%
+  distinct() %>%
+  mutate(statefip = as.character(statefip))
+
+
+long_covid <- long_covid %>%
+  left_join(state_mapping %>% mutate(statefip_covid = as.character(statefip)), by = "statefip")
+
+
+
+
+create_state_plots <- function(long_covid, output_dir = "state_plots_covid") {
+  # Create output directory if it doesn't exist
+  full_output_dir <- file.path(getwd(), output_dir)
+  
+  if (!dir.exists(full_output_dir)) {
+    dir.create(full_output_dir)
+  }
+  
+  # Ensure statefip is a character in long_covid (if necessary)
+  long_covid <- long_covid %>% mutate(statefip = as.character(statefip))
+  
+  # Get unique statefip codes
+  statefips <- unique(long_covid$statefip)
+  
+  # Iterate over each statefip and create a plot
+  for (statefip_code in statefips) {
+    # Filter data for the specific statefip
+    state_data <- long_covid %>% filter(statefip == statefip_code)
+    
+    # Get the state name corresponding to the statefip
+    state_name <- unique(state_data$state_name)
+    
+    # Check for any duplicate rows
+    if (nrow(state_data) > 0) {
+      
+      # Generate the ggplot for each state
+      p <- ggplot(state_data, aes(x = year, y = percent_employment, fill = as.factor(occ2010))) +
+        geom_bar(stat = "identity", position = "dodge") +
+        labs(
+          title = paste("Percent Employment in State", state_name),
+          x = "Year",
+          y = "Percent Employment",
+          fill = "Occupation"
+        ) +
+        theme_minimal() +
+        theme(
+          axis.text.x = element_text(angle = 45, hjust = 1),
+          strip.text = element_text(size = 8)
+        )
+      
+      # Save the plot to the output directory with statefip-specific file names
+      ggsave(filename = file.path(full_output_dir, paste0("state_", statefip_code, ".png")), plot = p, width = 10, height = 6)
+    } else {
+      warning(paste("No data found for statefip:", statefip_code))
+    }
+  }
+}
+
+
+create_state_plots(long_covid, output_dir = "state_plots_covid")
+
+
+# Check for a single state (e.g., California)
+long_covid %>% filter(state_name == "California") %>% select(occ2010, year, percent_employment)
+long_covid %>% filter(state_name == "Colorado") %>% select(occ2010, year, percent_employment)
+
+
+reg4 <- felm(percentage_change ~ within_150pct | 0 | 0 | state, data = long_covid )
+
+# reg5: TWFEs state + year
+reg5 <- felm(percentage_change ~ within_150pct | state + year | 0 | state, data = long_covid )
+
+# reg5w: TWFEs state + year with population weights
+reg5w <- felm(percentage_change ~ within_150pct | state + year | 0 | state, weights = long_covid$statefip, data = long_covid )
+
+# reg6: TWFE with state-specific time trends
+reg6 <- felm(percentage_change ~ within_150pct | state + year | 0 | state, data = long_covid )
+
+AboveMedian <- list("OLS"=reg4, "TWFE"=reg5, "TWFE+trend"=reg6)
+modelsummary(AboveMedian,
+             coef_map = c("minwageU"="Minimum Wage", "mean_hourwage"="Mean Hourly Wage", "percent_employment"="Percent Employment", "within_150pct"="Within 150% of Minimum Wage"), # don't show intercept or state trends
+             stars=T, gof_map = c("nobs", "r.squared"),
+             title = "Percentage Change of Employment based on being within 150% of Minimum Wage during the COVID-19 crisis",
+             output="default")
+```
+
