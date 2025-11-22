@@ -28,22 +28,12 @@ MyDir = getwd()
 
 ### Leave the rest of this chunk alone, unless you need to add a package
 
-# Sundstrom directory (leave this alone!)
-SundstromDir <- "/Users/wsundstrom/Library/CloudStorage/GoogleDrive-wsundstrom@scu.edu/My Drive/Econ173/data"
 
-# Choose correct working directory and proceed
-if (file.exists(SundstromDir)){
-  WorkDir = SundstromDir
-} else {
-  WorkDir = MyDir
-}
-
-# Set working directory 
-setwd(WorkDir)
+setwd(MyDir)
 load("org_2000_2024.RData")
 
 # merge the state names using the "statefip" variable
-url <- "https://github.com/wsundstrom/econ173/raw/data/statefips.dta"
+url <- "[REDACTED]"
 states <- read_dta(url) %>% 
   select(statefip = statefips, state = statename, statecd)
 org <- org %>% 
@@ -115,7 +105,7 @@ This is an R Markdown document. Markdown is a simple formatting syntax for autho
 
 When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
 
-```{r yeet, echo=TRUE}
+```{r datasetup, echo=TRUE}
 org$hourwage <- ifelse(org$hourwage == 999.99, NA, org$hourwage)
 org$hourwage2 <- ifelse(org$hourwage2 == 999.99, NA, org$hourwage2)
 org$hourwage <- ifelse(org$hourwage == 999.99, NA, org$hourwage)
@@ -225,7 +215,7 @@ ggplot(rec_loss, aes(x = year, y = percentage_change, fill = factor(occ2010))) +
 ```
 
 
-```{r livvydunne, echo=TRUE}
+```{r datasetup2, echo=TRUE}
 avg_perc_2006 <- rec_loss %>%
   group_by(occ2010) %>%             
   summarize(avg_percentage_change = mean(percentage_change))
@@ -268,7 +258,7 @@ ggplot(real_estate, aes(x = year, y = percentage_change, color = factor(occ2010)
 ```
 
 
-```{r skibidi, echo=TRUE}
+```{r datasetup3, echo=TRUE}
 #### COVID-19 recession
 
 
@@ -341,7 +331,7 @@ ggplot(avg_perc_covid, aes(x = factor(occ2010), y = avg_percentage_change, fill 
 
 ```
 
-```{r rizzler, echo=TRUE}
+```{r datasetup4, echo=TRUE}
 #### Taking occupation counts to create percentages of labor force for each year during 2007-2010
 
 recession_counts <- org %>%
@@ -572,7 +562,7 @@ create_state_plots1(long_rec, output_dir = "state_plots_rec")
 
 ```
 
-```{r megaknight, echo=TRUE}
+```{r datasetup5, echo=TRUE}
 #### Taking occupation counts to create percentages of labor force for each year during 2019-2022
 
 
@@ -659,7 +649,7 @@ long_covid <- long_covid %>%
   mutate(year = as.numeric(year))
 ```
 
-```{r evopekka, echo=TRUE}
+```{r datasetup6, echo=TRUE}
 mintab <- mintab %>%
   mutate(year = as.numeric(year))
 
